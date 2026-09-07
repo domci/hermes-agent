@@ -361,6 +361,84 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
 # --- Codex app-server turn ----------------------------------------------------
 
+def _kanban_deadline_fallback(messages: List[Dict[str, Any]], *, turn_timeout: float) -> str:
+    """Single-shot ``kanban_complete(blocked)`` after a deadline-accepted turn.
+
+    A deadline-accepted turn returns assistant text with no error, so the
+    worker CLI exits rc=0 with no terminal board call and the dispatcher
+    records crashed/protocol-violation. The repair caller then
+    re-dispatches work that deterministically cannot finish in the wall
+    clock. Recording ``blocked`` with a runbook-shaped (schemaVersion 1)
+    verdict instead lets the caller close the dispatch with a diagnosis.
+
+    Bounded by construction: one synchronous attempt, no retry, never
+    raises — every failure path returns a status string and the worker
+    exits exactly as it does today.
+    """
+    try:
+        from agent.kanban_stop import (
+            kanban_stop_nudge_enabled,
+            session_called_kanban_terminal,
+        )
+    except Exception:
+        return "skipped: kanban guard unavailable"
+    if not kanban_stop_nudge_enabled():
+        return "skipped: not a kanban worker"
+    if session_called_kanban_terminal(messages):
+        return "skipped: terminal call already made"
+    try:
+        from tools.kanban_tools import _handle_complete as _kb_complete
+    except Exception:
+        logger.warning(
+            "kanban deadline fallback: complete tool unavailable", exc_info=True
+        )
+        return "failed: tool unavailable"
+    wall = f"{turn_timeout:.0f}"
+    summary = (
+        f"Codex turn hit the {wall}s session wall clock before "
+        "turn/completed; the assistant's last message was accepted as the "
+        "final response. The worker produced no terminal board verdict, "
+        "so this fallback records blocked."
+    )
+    try:
+        raw = _kb_complete(
+            {
+                "summary": summary,
+                "metadata": {
+                    "schemaVersion": 1,
+                    "classification": "blocked",
+                    "summary": summary,
+                    "tests": [
+                        f"codex_turn_deadline_accepted after {wall}s wall clock"
+                    ],
+                    "commitSha": None,
+                    "blockedReason": (
+                        f"codex app-server turn deadline ({wall}s) accepted "
+                        "assistant text without turn/completed; no worker verdict"
+                    ),
+                },
+            }
+        )
+    except Exception:
+        logger.warning(
+            "kanban deadline fallback: complete raised", exc_info=True
+        )
+        return "failed: exception"
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        payload = {}
+    if isinstance(payload, dict) and payload.get("ok") is True:
+        logger.warning(
+            "kanban deadline fallback: recorded blocked for task %s",
+            payload.get("task_id"),
+        )
+        return "blocked"
+    logger.warning(
+        "kanban deadline fallback: complete rejected (%s)", str(raw)[:200]
+    )
+    return "failed: rejected"
+
 
 def _close_codex_session(agent) -> None:
     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
@@ -471,7 +549,21 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent)
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        from hermes_cli.timeouts import get_codex_turn_timeout
+        _turn_timeout = get_codex_turn_timeout()
+    except Exception:
+        logger.debug(
+            "codex app-server: turn-timeout lookup failed; "
+            "using built-in default",
+            exc_info=True,
+        )
+        # Matches hermes_cli.timeouts.DEFAULT_CODEX_TURN_TIMEOUT; kept
+        # literal so this fallback never depends on the config stack.
+        _turn_timeout = 1800.0
+    try:
+        turn = agent._codex_session.run_turn(
+            user_input=user_message, turn_timeout=_turn_timeout
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
@@ -488,12 +580,18 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
-    return _turn_result(
+    result = _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        # Set when the wall-clock deadline fired after a completed assistant message and the text was accepted
+        # without turn/completed — otherwise indistinguishable from a clean turn (see the kanban fallback below).
+        codex_turn_deadline_accepted=bool(getattr(turn, "deadline_accepted", False)),
         **usage_result,
     )
+    if result["codex_turn_deadline_accepted"] and not turn.interrupted and turn.error is None:
+        result["kanban_deadline_fallback"] = _kanban_deadline_fallback(messages, turn_timeout=_turn_timeout)
+    return result
 
 
 def _turn_result(interrupt: tuple[bool, Any], messages: List[Dict[str, Any]], *, api_calls: int, completed: bool,

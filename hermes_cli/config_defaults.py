@@ -100,6 +100,10 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
+        # Wall-clock budget (seconds) for one `codex app-server` turn — the whole agentic loop
+        # the Codex subprocess runs per user message. 1800 keeps a wide margin under kanban
+        # max_runtime_seconds (7200). Non-positive values fall back to 1800 seconds.
+        "codex_turn_timeout": 1800,
         # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.

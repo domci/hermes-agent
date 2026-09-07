@@ -11,6 +11,14 @@ from typing import Any, Iterable, Optional
 
 
 _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# Codex app-server turns invoke Hermes tools through the hermes-tools MCP
+# server, so the projector records them namespaced. The namespaced
+# spellings are the same terminal tools — without them the guard misses
+# real completions on codex-projected histories.
+_MCP_TERMINAL_KANBAN_TOOLS = frozenset({
+    "mcp.hermes-tools.kanban_complete",
+    "mcp.hermes-tools.kanban_block",
+})
 
 _DEFAULT_MAX_ATTEMPTS = 2
 
@@ -36,7 +44,9 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     for msg in filter(lambda m: isinstance(m, dict), messages or ()):
         role = msg.get("role")
         if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
+            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS
+            or _tool_call_name(tc) in _MCP_TERMINAL_KANBAN_TOOLS
+            for tc in msg.get("tool_calls") or []
         ):
             return True
         if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:

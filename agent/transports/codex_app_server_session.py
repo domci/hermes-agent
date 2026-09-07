@@ -51,6 +51,13 @@ class TurnResult:
     compacted: bool = False
     # Codex likely wedged (turn timeout, watchdog, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    # Set when the turn hit the wall-clock deadline but had already
+    # produced a completed assistant message, so the assistant text was
+    # accepted as the terminal response without turn/completed. The
+    # caller cannot distinguish this from a clean completion otherwise —
+    # kanban workers on this path exit rc=0 with no terminal board call
+    # and the dispatcher records a protocol violation.
+    deadline_accepted: bool = False
 
 
 # Some codex versions stream ``<turn_aborted>`` as raw agentMessage text when an
@@ -463,6 +470,7 @@ class CodexAppServerSession:
                 "turn/completed; accepting the assistant text as the terminal response"
             )
             turn_complete = True
+            result.deadline_accepted = True
 
         if not turn_complete and not result.interrupted:
             self._issue_interrupt(result.turn_id)

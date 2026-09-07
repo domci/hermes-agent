@@ -208,6 +208,39 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+        # A clean turn/completed is NOT a deadline accept.
+        assert r.deadline_accepted is False
+
+    def test_deadline_accept_sets_flag(self):
+        """Wall-clock deadline with a completed assistant message but no
+        turn/completed: the text is accepted AND flagged, so the caller
+        can tell this apart from a clean completion (kanban workers on
+        this path otherwise exit rc=0 with no terminal board call)."""
+        client = FakeClient()
+        client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "almost done"},
+            threadId="t", turnId="tu1",
+        )
+        # No turn/completed — the deadline must fire.
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=0.05)
+        assert r.final_text == "almost done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.deadline_accepted is True
+
+    def test_deadline_without_text_is_error_not_accept(self):
+        """Deadline with no assistant message is the plain timeout path —
+        never flagged as an accept."""
+        client = FakeClient()
+        client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=0.05)
+        assert r.final_text == ""
+        assert r.deadline_accepted is False
+        assert r.error is not None
 
 
 
