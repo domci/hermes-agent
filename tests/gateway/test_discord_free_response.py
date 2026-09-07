@@ -882,3 +882,25 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+@pytest.mark.asyncio
+async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatch):
+    """A plain (non-reply) message in a free-response channel still skips backfill.
+
+    Guards against the reply gate accidentally widening to every free-channel
+    message — only replies (and the existing mention-gap / thread cases) should
+    hydrate context.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] noise")
+
+    message = make_message(channel=FakeTextChannel(channel_id=321), content="just chatting")
+    assert message.reference is None  # not a reply
+
+    await adapter._handle_message(message)
+
+    adapter._fetch_channel_context.assert_not_awaited()

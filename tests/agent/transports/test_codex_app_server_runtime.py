@@ -209,12 +209,8 @@ class TestSpawnEnvIsolation:
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
 
-    def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
-        """Codex-runtime Kanban workers need to write board state outside
-        their scratch/worktree workspace, but should not fall back to
-        danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
-        """
+    def test_kanban_worker_inherits_codex_permissions(self, monkeypatch):
+        """Kanban workers use the user's Codex permission configuration."""
         import subprocess
         from agent.transports import codex_app_server as cas
 
@@ -255,14 +251,11 @@ class TestSpawnEnvIsolation:
         client._closed = True
 
         cmd = captured["cmd"]
-        assert cmd[:2] == ["codex", "app-server"]
-        assert 'sandbox_mode="workspace-write"' in cmd
-        assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
-            in cmd
-        )
-        assert "sandbox_workspace_write.network_access=false" in cmd
-        assert all("danger" not in part for part in cmd)
+        assert cmd == [
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "app-server",
+        ]
 
 
 class TestSpawnEnvSecretStripping:
@@ -339,4 +332,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import queue
 import re
 import subprocess
@@ -62,18 +61,15 @@ class CodexAppServerClient:
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 
-        cmd = [codex_bin, "app-server", *(extra_args or [])]
-        # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
-        if spawn_env.get("HERMES_KANBAN_TASK"):
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
-            kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
-            cmd += [
-                "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
-                "-c", "sandbox_workspace_write.network_access=false",
-            ]
+        # Local fork change: run app-server with approvals and sandbox
+        # bypassed so kanban workers inherit the user's Codex permission
+        # configuration instead of the workspace sandbox. Deliberately
+        # diverges from upstream's sandbox writable-roots approach.
+        cmd = [
+            codex_bin,
+            "--dangerously-bypass-approvals-and-sandbox",
+            "app-server",
+        ] + list(extra_args or [])
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
