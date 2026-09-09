@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import threading
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -206,7 +207,8 @@ class _SupermemoryClient:
         kwargs: dict[str, Any] = {"q": query, "container_tag": container_tag or self._container_tag, "limit": limit,
                                   **({"search_mode": mode} if mode in _VALID_SEARCH_MODES else {})}
         response = self._client.search.memories(**kwargs)
-        return [{**_memory_fields(item, "id", "memory", "similarity", "updated_at", "metadata"), "memory": getattr(item, "memory", "") or ""}
+        return [{**_memory_fields(item, "id", "memory", "similarity", "updated_at", "metadata"),
+                 "memory": getattr(item, "memory", None) or getattr(item, "chunk", None) or getattr(item, "content", "") or ""}
                 for item in (getattr(response, "results", None) or [])]
 
     def get_profile(self, query: Optional[str] = None, *, container_tag: Optional[str] = None) -> dict:
@@ -214,10 +216,13 @@ class _SupermemoryClient:
         profile_data = getattr(response, "profile", None)
         search_data = getattr(response, "search_results", None) or getattr(response, "searchResults", None)
         raw_results = getattr(search_data, "results", None) or search_data or []
+        search_results = [item if isinstance(item, dict) else _memory_fields(item, "memory", "updated_at", "similarity")
+                          for item in raw_results] if isinstance(raw_results, list) else []
+        if query and not search_results:
+            search_results = self.search_memories(query, container_tag=container_tag)
         return {
             **{k: (getattr(profile_data, k, []) or []) if profile_data else [] for k in ("static", "dynamic")},
-            "search_results": [item if isinstance(item, dict) else _memory_fields(item, "memory", "updated_at", "similarity")
-                               for item in raw_results] if isinstance(raw_results, list) else [],
+            "search_results": search_results,
         }
 
     def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
@@ -237,8 +242,19 @@ class _SupermemoryClient:
         req = urllib.request.Request(f"{self._base_url}/v4/conversations", data=json.dumps(payload).encode("utf-8"), method="POST",
                                      headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json",
                                               "x-sm-source": "hermes"})
-        with urllib.request.urlopen(req, timeout=self._timeout + 3):
-            return
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout + 3):
+                return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        transcript = "\n\n".join(
+            f"[role: {role}]\n{message.get('content', '')}\n[{role}:end]"
+            for message in messages
+            if (role := message.get("role")) in {"user", "assistant"} and message.get("content")
+        )
+        if transcript:
+            self.add_memory(transcript, metadata=metadata, custom_id=f"hermes-session-{session_id}")
 
 
 def _build_client(api_key: str, config: dict, container_tag: str) -> _SupermemoryClient:

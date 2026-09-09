@@ -2,11 +2,15 @@ import json
 import os
 import stat
 import threading
+import urllib.error
+from email.message import Message
+from types import SimpleNamespace
 
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _SupermemoryClient,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -156,6 +160,44 @@ def test_merge_metadata_stamps_sm_source():
     assert merged2["sm_source"] == "hermes"
     assert merged2["type"] == "conversation_turn"
     assert "source" not in merged2
+
+
+def test_search_memories_uses_local_chunk_when_memory_is_null():
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._container_tag = "hermes_nicola"
+    client._search_mode = "hybrid"
+    result = SimpleNamespace(
+        id="result-1",
+        memory=None,
+        chunk="Nicola private integration marker is NCL-E2E-8841.",
+        similarity=0.91,
+        updated_at="2026-09-09T06:42:12.768Z",
+        metadata={"type": "fact"},
+    )
+    client.__dict__["_client"] = SimpleNamespace(
+        search=SimpleNamespace(memories=lambda **kwargs: SimpleNamespace(results=[result]))
+    )
+
+    memories = client.search_memories("Nicola marker", limit=5)
+
+    assert memories[0]["memory"] == "Nicola private integration marker is NCL-E2E-8841."
+
+
+def test_get_profile_falls_back_to_memory_search_when_profile_query_is_empty(monkeypatch):
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._container_tag = "hermes_nicola"
+    client.__dict__["_client"] = SimpleNamespace(
+        profile=lambda **kwargs: SimpleNamespace(
+            profile=SimpleNamespace(static=[], dynamic=[]),
+            search_results=[],
+        )
+    )
+    fallback = [{"memory": "Nicola private integration marker is NCL-E2E-8841.", "similarity": 0.91}]
+    monkeypatch.setattr(client, "search_memories", lambda query, **kwargs: fallback)
+
+    profile = client.get_profile("Nicola marker")
+
+    assert profile["search_results"] == fallback
 
 
 def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
@@ -358,6 +400,44 @@ def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expecte
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
     assert captured["url"] == expected_url
+
+
+def test_ingest_conversation_falls_back_to_document_when_endpoint_is_missing(monkeypatch):
+    """Supermemory Local omits /v4/conversations, so sessions remain ingestible as documents."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes_nicola"
+    client._timeout = 1.0
+    client._base_url = "http://localhost:6767"
+    captured = {}
+
+    def missing_conversation_endpoint(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", Message(), None)
+
+    def capture_document(content, metadata=None, **kwargs):
+        captured.update(content=content, metadata=metadata, kwargs=kwargs)
+        return {"id": "doc_123"}
+
+    monkeypatch.setattr("urllib.request.urlopen", missing_conversation_endpoint)
+    monkeypatch.setattr(client, "add_memory", capture_document)
+
+    client.ingest_conversation(
+        "s1",
+        [
+            {"role": "user", "content": "Remember the blue launch checklist."},
+            {"role": "assistant", "content": "I will remember it."},
+        ],
+        metadata={"type": "full_session", "message_count": 2},
+    )
+
+    assert captured["content"] == (
+        "[role: user]\nRemember the blue launch checklist.\n[user:end]\n\n"
+        "[role: assistant]\nI will remember it.\n[assistant:end]"
+    )
+    assert captured["metadata"] == {"type": "full_session", "message_count": 2}
+    assert captured["kwargs"]["custom_id"] == "hermes-session-s1"
 
 
 # -- Multi-container tests ----------------------------------------------------
