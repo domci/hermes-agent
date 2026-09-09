@@ -422,3 +422,9 @@ Long-form background lives in `website/docs/developer-guide/` (agent-loop, promp
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
 session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
 `hermes-agent-dev` skill, not here.
+
+## Supermemory
+
+- Supermemory keeps durable decisions and lessons for this repository.
+- Never save secrets. Use `<private>...</private>` for sensitive text.
+- Run `$supermemory-status` when memory checks are needed.
