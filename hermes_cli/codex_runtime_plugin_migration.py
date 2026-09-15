@@ -368,9 +368,18 @@ def _build_hermes_tools_mcp_entry() -> dict:
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
         "env": env,
+        # Codex starts MCP servers with a minimal env, so without these the kanban
+        # tools' check_fn hides kanban_complete/kanban_block from dispatcher workers.
+        "env_vars": list(KANBAN_WORKER_ENV_VARS),
         # Generous timeouts — browser_navigate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,
         "tool_timeout_sec": 600.0}
+
+
+KANBAN_WORKER_ENV_VARS = (
+    "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK", "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_BOARD", "HERMES_KANBAN_WORKSPACE", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_PROFILE",
+)
 
 
 def _write_atomic(target: Path, text: str) -> None:

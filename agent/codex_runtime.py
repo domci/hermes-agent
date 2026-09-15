@@ -440,6 +440,41 @@ def _kanban_deadline_fallback(messages: List[Dict[str, Any]], *, turn_timeout: f
     return "failed: rejected"
 
 
+def _codex_kanban_stop_nudge(messages: List[Dict[str, Any]], attempts: int) -> str | None:
+    """Kanban stop gate for the codex app-server path.
+
+    Codex owns the loop here, so conversation_loop's turn_stop_gates never run and a worker
+    that narrates and stops exits rc=0 (dispatcher protocol_violation). Returns the nudge
+    to send as a follow-up turn, or None. The board row is checked too: a worker that
+    finished through the ``hermes kanban`` shell CLI leaves no tool call in the history.
+    """
+    try:
+        from agent.kanban_stop import build_kanban_stop_nudge
+        nudge = build_kanban_stop_nudge(messages=messages, attempts=attempts)
+    except Exception:
+        logger.debug("codex kanban stop check failed", exc_info=True)
+        return None
+    if not nudge:
+        return None
+    tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    try:
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        with kbc.connect_closing() as conn:
+            task = kb.get_task(conn, tid)
+        if task is not None and task.status != "running":
+            return None
+    except Exception:
+        logger.debug("codex kanban stop: board lookup failed; nudging anyway", exc_info=True)
+    board = (os.environ.get("HERMES_KANBAN_BOARD") or "").strip()
+    board_arg = f" --board {board}" if board else ""
+    return nudge + (
+        "\n\nIf `kanban_complete` / `kanban_block` are not in your tool list, use the shell: "
+        f"`hermes kanban{board_arg} complete {tid} --summary '<summary>' --metadata '<json object>'` "
+        f"or `hermes kanban{board_arg} block {tid} '<reason>'`."
+    )
+
+
 def _close_codex_session(agent) -> None:
     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
     with suppress(Exception):
@@ -591,6 +626,40 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     )
     if result["codex_turn_deadline_accepted"] and not turn.interrupted and turn.error is None:
         result["kanban_deadline_fallback"] = _kanban_deadline_fallback(messages, turn_timeout=_turn_timeout)
+        return result
+    # Same bounded end-of-turn kanban nudge the chat_completions loop applies (turn_stop_gates).
+    nudges = 0
+    while not turn.interrupted and turn.error is None and not getattr(turn, "should_retire", False):
+        nudge = _codex_kanban_stop_nudge(messages, nudges)
+        if not nudge:
+            break
+        nudges += 1
+        logger.warning("codex app-server: kanban worker ended turn without kanban_complete/kanban_block "
+                       "— nudging (attempt %d)", nudges)
+        from agent.message_metadata import append_message
+        append_message(messages, {"role": "user", "content": nudge, "_kanban_stop_synthetic": True})
+        try:
+            turn = agent._codex_session.run_turn(user_input=nudge, turn_timeout=_turn_timeout)
+        except Exception:
+            logger.exception("codex app-server kanban nudge turn failed")
+            _close_codex_session(agent)
+            break
+        interrupt = _consume_user_interrupt(agent, turn.interrupted)
+        if getattr(turn, "should_retire", False):
+            _close_codex_session(agent)
+        _persist_projected_messages(agent, turn, messages)
+        usage_result = _finish_codex_turn(
+            agent, turn, messages, original_user_message=original_user_message, should_review_memory=False,
+        )
+        result = _turn_result(
+            interrupt, messages, api_calls=1 + nudges, completed=not turn.interrupted and turn.error is None,
+            error=turn.error, final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id,
+            codex_turn_id=turn.turn_id, codex_turn_deadline_accepted=bool(getattr(turn, "deadline_accepted", False)),
+            kanban_stop_nudges=nudges, **usage_result,
+        )
+        if result["codex_turn_deadline_accepted"] and not turn.interrupted and turn.error is None:
+            result["kanban_deadline_fallback"] = _kanban_deadline_fallback(messages, turn_timeout=_turn_timeout)
+            break
     return result
 
 
