@@ -229,6 +229,8 @@ def _messaging_platform_payload(
     ]
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    if platform_id == "whatsapp":
+        configured = (_whatsapp_session_path() / "creds.json").is_file()
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -293,6 +295,24 @@ _WHATSAPP_ONBOARDING_TTL_SECONDS = 600
 _WHATSAPP_ONBOARDING_TERMINAL_STATUSES = {"connected", "error", "expired", "cancelled"}
 _WHATSAPP_SESSION_NOT_FOUND = "WhatsApp setup session was not found. Start a new setup."
 _whatsapp_onboarding_lock = threading.RLock()
+
+
+def _whatsapp_owner_profile(profile: Optional[str]) -> Optional[str]:
+    """WhatsApp is one default-owned bridge under profile multiplexing."""
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        from hermes_cli.profiles import get_active_profile_name
+
+        target = get_active_profile_name()
+    else:
+        _resolve_profile_dir(requested)
+        target = requested
+    if target in {"default", "custom"}:
+        return profile
+    from gateway.config import load_gateway_config
+
+    with _config_profile_scope("default"):
+        return "default" if load_gateway_config().multiplex_profiles else profile
 
 
 def _normalize_whatsapp_onboarding_mode(value: Any) -> str:
@@ -520,17 +540,18 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
 
 
 @router.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
+    owner_profile = _whatsapp_owner_profile(body.profile or profile)
 
-    with _config_profile_scope(body.profile):
+    with _config_profile_scope(owner_profile):
         session_path = _whatsapp_session_path()
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
         fields = dict(
             proc=None, mode=mode, allowed_users=allowed_users, session_path=str(session_path),
             expires_at=datetime.fromtimestamp(expires_at_ts, timezone.utc).isoformat().replace("+00:00", "Z"),
-            expires_at_ts=expires_at_ts, profile=body.profile,
+            expires_at_ts=expires_at_ts, profile=owner_profile,
         )
         already_linked = (session_path / "creds.json").exists()
         if already_linked:  # creds on disk: report connected without pairing
@@ -574,7 +595,7 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
             allowed_users = record.account_phone or record.account_id or ""
         record_profile = record.profile
 
-    effective_profile = body.profile or profile or record_profile
+    effective_profile = record_profile or _whatsapp_owner_profile(body.profile or profile)
     with _onboarding_save_errors("WhatsApp onboarding apply failed", "Failed to save WhatsApp setup."):
         with _config_profile_scope(effective_profile):
             save_env_value("WHATSAPP_MODE", mode)
@@ -770,12 +791,20 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # credentials/state, not the root install's. load_env() honors the HERMES_HOME contextvar override;
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
+        entries = _messaging_platform_catalog()
         with _profile_scope(profile) as scoped_dir:
-            return {
+            payload = {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
-                "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                "platforms": _platform_payloads(scoped_dir, entries),
             }
+        owner_profile = _whatsapp_owner_profile(profile)
+        if owner_profile != profile:
+            whatsapp_entry = next(entry for entry in entries if entry["id"] == "whatsapp")
+            with _profile_scope(owner_profile) as scoped_dir:
+                shared = _platform_payloads(scoped_dir, [whatsapp_entry])[0]
+            payload["platforms"] = [shared if item["id"] == "whatsapp" else item for item in payload["platforms"]]
+        return payload
 
     return await asyncio.to_thread(_run)
 
@@ -828,6 +857,8 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
     entry = _require_platform(platform_id)
 
     target_profile = body.profile or profile
+    if platform_id == "whatsapp":
+        target_profile = _whatsapp_owner_profile(target_profile)
     if body.enabled:
         conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
         if conflict:
@@ -876,6 +907,8 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 @router.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
+    if platform_id == "whatsapp":
+        profile = _whatsapp_owner_profile(profile)
 
     def _run():
         with _profile_scope(profile) as scoped_dir:

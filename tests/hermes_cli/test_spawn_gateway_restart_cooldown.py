@@ -10,7 +10,7 @@ often enough mid-FTS5-write to corrupt ``state.db``.
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import hermes_cli.web_server_gateway as _web_server_gateway
@@ -203,6 +203,32 @@ class TestExistingBehaviourIsPreserved:
         assert proc is live
         assert reused is True
         mock_spawn.assert_not_called()
+
+    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    def test_multiplexed_profile_restarts_default_gateway(self, mock_spawn):
+        """The selected profile is served by the one default-owned process."""
+        from hermes_cli.web_server import _spawn_gateway_restart
+
+        mock_spawn.return_value = _exited_proc()
+        with patch(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+            return_value=True,
+        ), patch(
+            "hermes_cli.gateway._reap_unsupervised_gateway_orphans"
+        ), patch(
+            "hermes_cli.web_server_gateway._gateway_subcommand",
+            return_value=["gateway", "restart"],
+        ) as mock_subcmd:
+            _spawn_gateway_restart(profile="nicola")
+
+        assert mock_subcmd.call_args_list == [
+            call("nicola", "restart"),
+            call(None, "restart"),
+        ]
+        mock_spawn.assert_called_once_with(
+            ["gateway", "restart"], "gateway-restart"
+        )
 
     @patch(
         "hermes_cli.web_server_gateway._gateway_subcommand",

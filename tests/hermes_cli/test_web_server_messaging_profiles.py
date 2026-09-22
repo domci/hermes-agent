@@ -63,6 +63,10 @@ def _telegram(payload):
     return next(p for p in payload["platforms"] if p["id"] == "telegram")
 
 
+def _whatsapp(payload):
+    return next(p for p in payload["platforms"] if p["id"] == "whatsapp")
+
+
 def _env_field(platform, key):
     return next(f for f in platform["env_vars"] if f["key"] == key)
 
@@ -234,9 +238,6 @@ class TestMultiplexPortBindingGuard:
             assert "default profile" in resp.json()["detail"]
 
 
-
-
-
     def test_secondary_can_disable_and_clear_invalid_config(
         self, client, isolated_profiles
     ):
@@ -267,6 +268,56 @@ class TestMultiplexPortBindingGuard:
                 json={"clear_env": [api_server["env_vars"][0]["key"]]},
             )
             assert resp.status_code == 200
+
+
+class TestMultiplexSharedWhatsApp:
+    @pytest.fixture(autouse=True)
+    def _no_multiplex_env_override(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+    def test_secondary_onboarding_and_status_use_default_owner(
+        self, client, isolated_profiles
+    ):
+        import hermes_cli.web_server_messaging as messaging
+
+        default_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_alpha"]
+        session_dir = default_home / "platforms" / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "creds.json").write_text(
+            '{"me":{"id":"491621710272:1@s.whatsapp.net","name":"Bruce"}}',
+            encoding="utf-8",
+        )
+        (default_home / ".env").write_text(
+            "WHATSAPP_ENABLED=true\nWHATSAPP_MODE=bot\n", encoding="utf-8"
+        )
+        (default_home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "gateway": {"multiplex_profiles": True},
+                "platforms": {"whatsapp": {"enabled": True}},
+            }),
+            encoding="utf-8",
+        )
+
+        response = client.post(
+            "/api/messaging/whatsapp/onboarding/start",
+            params={"profile": "worker_alpha"},
+            json={"mode": "bot", "allowed_users": ""},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["account_name"] == "Bruce"
+        record = messaging._whatsapp_onboarding_sessions[response.json()["pairing_id"]]
+        assert record.profile == "default"
+        assert record.session_path == str(session_dir)
+        payload = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json()
+        assert _whatsapp(payload)["enabled"] is True
+        assert _whatsapp(payload)["configured"] is True
+        assert not (worker_home / "platforms" / "whatsapp" / "session").exists()
+        messaging._whatsapp_onboarding_sessions.clear()
+
 
 def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
     from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope

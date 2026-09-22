@@ -850,6 +850,11 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     global _LAST_GATEWAY_RESTART
 
     subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
+    if profile:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+
+        if named_profile_served_by_running_multiplexer(profile):
+            subcommand = _gateway_mod._gateway_subcommand(None, "restart")
     existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")
