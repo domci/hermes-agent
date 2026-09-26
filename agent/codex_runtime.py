@@ -660,9 +660,12 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     history_seed = render_history_seed(messages) or None
     # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
     # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
-    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
+    # Hermes' credential never enters the JSON-RPC payload (#75186). OpenAI routes send an explicit model
+    # when configured; otherwise Codex selects its default.
     model_provider = None
-    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
+    from hermes_cli.providers import normalize_provider
+    provider = normalize_provider(str(getattr(agent, "provider", "") or ""))
+    if provider == "custom":
         from hermes_cli.runtime_provider_custom import codex_model_provider_id
         model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
@@ -671,7 +674,12 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
-        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
+        model=(
+            getattr(agent, "model", None)
+            if model_provider or provider in {"openai", "openai-codex"}
+            else None
+        ),
+        model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 
