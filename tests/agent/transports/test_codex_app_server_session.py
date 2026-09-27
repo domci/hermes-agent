@@ -197,12 +197,14 @@ class TestLifecycle:
         assert "developerInstructions" not in params
         assert params["personality"] == "none"
 
-    def test_named_custom_provider_selects_codex_model_provider(self, monkeypatch):
+    def test_runtime_model_selection_reaches_codex_thread_start(self, monkeypatch):
         """#75186: for ``provider=custom`` + a configured ``providers.<name>`` entry, the session built by
         ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
-        API key; openai/openai-codex agents keep codex's defaults (cwd only)."""
+        API key. Explicit OpenAI models are also sent; an absent model keeps Codex's default."""
         import hermes_cli.runtime_provider as rp
+        import agent.codex_runtime as codex_runtime
         from agent.codex_runtime import _ensure_codex_session
+        from hermes_cli.model_normalize import normalize_model_for_provider
         from agent.transports import codex_app_server_session as sess_mod
         monkeypatch.setattr(rp, "load_config", lambda: {
             "providers": {"my-gateway": {"api": "https://gateway.example.com/v1", "api_key": "sk-secret"}}})
@@ -224,8 +226,38 @@ class TestLifecycle:
         base = {"cwd": "/tmp", "personality": "none"}
         assert named == {**base, "modelProvider": "my-gateway", "model": "gpt-5.4"}
         assert "sk-secret" not in repr(named)
-        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
+        assert thread_start_params(
+            provider="openai-codex", requested_provider="openai-codex", model="gpt-6-sol"
+        ) == {**base, "model": "gpt-6-sol"}
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model=None) == base
         assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
+
+        # Nicola's configured default is openai/gpt-6-sol. The regular agent init path
+        # normalizes that provider-prefixed alias to the bare id Codex accepts.
+        configured_model = "openai/gpt-6-sol"
+        agent_model = normalize_model_for_provider(configured_model, "openai-codex")
+        assert agent_model == configured_model.removeprefix("openai/")
+        assert thread_start_params(
+            provider="openai-codex", requested_provider="openai-codex", model=agent_model
+        ) == {**base, "model": agent_model}
+
+        # The persisted-thread path must receive the same explicit model without making
+        # an inference request; this fake app-server only performs initialize + resume.
+        monkeypatch.setattr(codex_runtime, "_stored_codex_thread_id", lambda _agent: "stored-nicola-thread")
+        agent = SimpleNamespace(
+            _codex_session=None, session_cwd="/tmp", api_key="sk-secret",
+            provider="openai-codex", requested_provider="openai-codex", model=agent_model,
+        )
+        _ensure_codex_session(agent)
+        client = clients[-1]
+        client._request_handler = lambda method, params: (
+            {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {})
+        agent._codex_session.ensure_started()
+        resumed = next(p for (m, p) in client.requests if m == "thread/resume")
+        assert resumed == {
+            "threadId": "stored-nicola-thread", **base, "model": agent_model,
+        }
+        assert not any(method.startswith("turn/") for method, _ in client.requests)
 
     def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
