@@ -1495,7 +1495,7 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=
     never NULL: NULL is the legacy pre-fingerprint row whose bare-PID kill authority a new spawn must
     not inherit."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=True):
         if run_id is None:
             run_id = _kb._current_run_id(conn, task_id)
         cur = conn.execute(
