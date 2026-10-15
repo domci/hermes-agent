@@ -299,11 +299,12 @@ class TestSpawnEnvIsolation:
         client._closed = True
 
         cmd = captured["cmd"]
-        assert cmd == [
+        assert cmd[:3] == [
             "codex",
             "--dangerously-bypass-approvals-and-sandbox",
             "app-server",
         ]
+        assert not any("sandbox_workspace_write" in arg for arg in cmd)
 
 
 class TestSpawnEnvSecretStripping:

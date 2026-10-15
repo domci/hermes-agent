@@ -47,6 +47,11 @@ def _make_agent(turn):
     agent._session_db = None
     agent._session_db_created = True
     agent.session_id = "sess-codex-fallback"
+    agent.model = "gpt-5.5"
+    agent.provider = "openai-codex"
+    agent.reasoning_config = None
+    agent.service_tier = None
+    agent._codex_session_prompt = None
     return agent
 
 
