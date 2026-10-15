@@ -159,6 +159,9 @@ class TestCooldownReleases:
         mock_spawn.side_effect = [_exited_proc(1), _exited_proc(2)]
 
         with patch("hermes_cli.gateway._reap_unsupervised_gateway_orphans"), patch(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+            return_value=False,
+        ), patch(
             "hermes_cli.web_server.time.monotonic",
             side_effect=[100.0, 101.0],
         ), patch(
