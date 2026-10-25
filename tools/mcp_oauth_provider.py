@@ -155,9 +155,9 @@ class HermesProviderMixin:
         self.context.redirect_handler = _with_offline_access
 
     async def _hermes_accept_origin_issued_metadata(self, response):
-        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
-        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
-        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+        """Accept origin-issued path metadata (Strava, #116233) or host-root slash drift (Awin/Google).
+        The SDK's exact-string check (RFC 8414 §3.3) rejects these equivalent host-root spellings;
+        non-root paths are not normalized because a trailing slash can identify a different issuer.
 
         The SDK validates inside its Step 2 loop right after reading the response, so the document is
         installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
@@ -182,10 +182,13 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not (
+            metadata_issued_by_origin(metadata, self.context.auth_server_url, response)
+            or metadata_matches_root_slash_equivalent(metadata, self.context.auth_server_url, response)
+        ):
             return response
         self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "MCP OAuth: accepting compatible authorization-server metadata from %s with issuer %s for "
             "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
@@ -549,6 +552,26 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def metadata_matches_root_slash_equivalent(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Accept only a host-root issuer with versus without one slash, from its own discovery URL.
+
+    Keep the document's issuer and advertised credential binding unchanged. Do not generalize this
+    to path issuers, repeated slashes, query strings, or redirects to another metadata location.
+    """
+    if not auth_server_url or response.status_code != 200:
+        return False
+    advertised = urlsplit(auth_server_url)
+    if (advertised.path not in ("", "/") or advertised.username is not None or advertised.password is not None
+            or advertised.query or advertised.fragment):
+        return False
+    origin = f"{advertised.scheme}://{advertised.netloc}"
+    advertised_url = str(auth_server_url)
+    issuer_url = str(metadata.issuer)
+    if {advertised_url, issuer_url} != {origin, f"{origin}/"}:
+        return False
+    return str(response.url) in {f"{origin}{path}" for path in _ASM_DISCOVERY_PATHS}
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:
