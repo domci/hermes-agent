@@ -53,8 +53,8 @@ _EVENT_KINDS_BY_ACTOR = {
         "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
-    })}
+        "authority.claimed", "authority.lost", "room.context_set", "room.created", "room.disbanded",
+        "room.members_changed", "room.renamed"})}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
 _ACTOR_FIELDS = frozenset({"kind", "id", *(field for field, _ in _OPTIONAL_ACTOR_FIELDS)})
@@ -376,6 +376,9 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
         conn.execute(_EVENT_BYTES_BACKFILL.format(where="1"))
 
 
+_KIND_INDEX = "idx_hosted_room_events_kind"
+
+
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
@@ -386,6 +389,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    # Latest-event-of-a-kind reads (room purpose/notes) seek here instead of walking the room's history.
+    conn.execute(f"CREATE INDEX IF NOT EXISTS {_KIND_INDEX} ON hosted_room_events(room_id, kind, seq)")
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -398,7 +403,8 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
         for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
-    ).fetchone() is not None
+    ).fetchone() is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (_KIND_INDEX,)).fetchone() is not None
 
 
 def default_db_path() -> Path:
@@ -956,9 +962,10 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, control_reserve: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
-    with identical content returns the original, different content fails closed."""
+    with identical content returns the original, different content fails closed. ``control_reserve`` lets a
+    bounded gateway notice use the control headroom, so a room whose log is full can still say why."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
@@ -993,7 +1000,7 @@ def append_event(
                                        manifest=json.loads(payload_json).get("attachments", []), now=now)
         event_bytes = _insert_event(
             conn, room, room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, now,
-            allow_control=kind in _CONTROL_EVENT_KINDS)
+            allow_control=kind in _CONTROL_EVENT_KINDS or (control_reserve and normalized_actor["kind"] == "gateway"))
         _fenced_update(conn, """UPDATE hosted_rooms SET next_seq=?, event_bytes=event_bytes+?, updated_at=?
                 WHERE room_id=? AND next_seq=?""", (seq + 1, event_bytes, now, room_id, seq),
             RuntimeError("hosted room sequence advance lost its write fence"))
