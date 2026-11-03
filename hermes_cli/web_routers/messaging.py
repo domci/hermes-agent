@@ -384,10 +384,9 @@ def _whatsapp_owner_profile(profile: Optional[str]) -> Optional[str]:
         target = requested
     if target in {"default", "custom"}:
         return profile
-    from gateway.config import load_gateway_config
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
 
-    with _config_profile_scope("default"):
-        return "default" if load_gateway_config().multiplex_profiles else profile
+    return "default" if default_gateway_multiplexes() else profile
 
 
 def _normalize_whatsapp_onboarding_mode(value: Any) -> str:
@@ -1000,8 +999,9 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # credentials/state, not the root install's. load_env() honors the HERMES_HOME contextvar override;
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
-        entries = _messaging_platform_catalog()
         with _profile_scope(profile) as scoped_dir:
+            # Inside the scope: plugin platforms are registered per profile.
+            entries = _messaging_platform_catalog()
             payload = {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
