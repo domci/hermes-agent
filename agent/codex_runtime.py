@@ -944,13 +944,15 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         interrupt = _consume_user_interrupt(agent, turn.interrupted)
         if getattr(turn, "should_retire", False):
             _close_codex_session(agent)
+        reply = _transform_codex_reply(agent, turn, turn_id)
         _persist_projected_messages(agent, turn, messages)
         usage_result = _finish_codex_turn(
             agent, turn, messages, original_user_message=original_user_message, should_review_memory=False,
+            final_response=reply["final_response"],
         )
         result = _turn_result(
             interrupt, messages, api_calls=1 + nudges, completed=not turn.interrupted and turn.error is None,
-            error=turn.error, final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id,
+            error=turn.error, **reply, agent_persisted=True, codex_thread_id=turn.thread_id,
             codex_turn_id=turn.turn_id, codex_turn_deadline_accepted=bool(getattr(turn, "deadline_accepted", False)),
             kanban_stop_nudges=nudges, **usage_result,
         )
