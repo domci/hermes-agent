@@ -5590,7 +5590,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name, auto_archive_duration=1440, reason=reason,
+                    # discord.py defaults message-less threads to PRIVATE: invisible to users
+                    # who aren't added. Handoff/cron threads must be visible in the channel.
+                    type=discord.ChannelType.public_thread,
+                )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
