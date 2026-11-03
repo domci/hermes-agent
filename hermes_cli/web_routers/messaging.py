@@ -264,7 +264,8 @@ def _messaging_platform_payload(
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
     if platform_id == "whatsapp":
-        configured = (_whatsapp_session_path() / "creds.json").is_file()
+        # A paired session counts too: under multiplexing the env flag lives on the owning profile.
+        configured = configured or (_whatsapp_session_path() / "creds.json").is_file()
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
