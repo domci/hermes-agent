@@ -720,3 +720,15 @@ def _park_reconnects(monkeypatch, runner):
 
     monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", waiting_reconnect)
     return parked
+
+
+@pytest.mark.asyncio
+async def test_secondary_connect_failure_logs_the_adapters_fatal_error(monkeypatch, caplog):
+    """The generic "failed to connect" warning carries the adapter's fatal code + message, or the actionable
+    cause (e.g. a bridge port served by another profile) never reaches the log."""
+    runner, _ = _shared_token_runner(monkeypatch)
+    _record_connects(monkeypatch, runner, result=False, initial=True)
+    _park_reconnects(monkeypatch, runner)
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await runner._start_one_profile_adapters("nicola", Path("/profiles/nicola"), {})
+    assert "failed to connect (profile: nicola): [transport_stale] Gateway transport stale" in caplog.text
