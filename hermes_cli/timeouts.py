@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 #: Default wall-clock budget (seconds) for one `codex app-server` turn.
 DEFAULT_CODEX_TURN_TIMEOUT = 1800.0
@@ -56,6 +59,7 @@ def get_codex_turn_timeout() -> float:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
     except Exception:
+        logger.debug("Codex turn timeout config unavailable", exc_info=True)
         return DEFAULT_CODEX_TURN_TIMEOUT
 
     agent = config.get("agent", {}) if isinstance(config, dict) else {}

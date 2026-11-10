@@ -139,6 +139,7 @@ def test_fallback_skipped_for_mcp_namespaced_terminal_call(monkeypatch):
         monkeypatch,
     )
     assert complete.call_count == 0
+    assert result["kanban_deadline_fallback"] == "skipped: terminal call already made"
 
 
 def test_fallback_skipped_without_deadline_accept(monkeypatch):

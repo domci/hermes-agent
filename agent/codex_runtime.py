@@ -493,6 +493,7 @@ def _kanban_deadline_fallback(messages: list[dict[str, Any]], *, turn_timeout: f
             session_called_kanban_terminal,
         )
     except Exception:
+        logger.debug("kanban deadline fallback: guard unavailable", exc_info=True)
         return "skipped: kanban guard unavailable"
     if not kanban_stop_nudge_enabled():
         return "skipped: not a kanban worker"
@@ -538,7 +539,7 @@ def _kanban_deadline_fallback(messages: list[dict[str, Any]], *, turn_timeout: f
         return "failed: exception"
     try:
         payload = json.loads(raw) if isinstance(raw, str) else {}
-    except Exception:
+    except (TypeError, ValueError):
         payload = {}
     if isinstance(payload, dict) and payload.get("ok") is True:
         logger.warning(
@@ -846,7 +847,7 @@ def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
     if not turn.final_text or (turn.interrupted and not held):
         return {"final_response": turn.final_text}
     from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
-    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
+    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id, logger=logger)
     rows = [m for m in turn.projected_messages or [] if m.get("role") == "assistant" and m.get("content")]
     final_row = next((m for m in reversed(rows) if m.get("content") == turn.final_text), None)
     if transformed and final_row is not None:
