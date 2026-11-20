@@ -5516,6 +5516,21 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
+    async def _add_allowed_users_to_thread(self, thread: Any) -> None:
+        """Join DISCORD_ALLOWED_USERS to a bot-started thread.
+        Discord's sidebar lists only joined threads; without this, proactive threads stay hidden."""
+        add_user = getattr(thread, "add_user", None)
+        if add_user is None:
+            return
+        for raw in sorted(self._get_allowed_users()):
+            if not str(raw).isdigit():
+                continue
+            try:
+                await add_user(discord.Object(id=int(raw)))
+            except Exception as exc:
+                logger.debug("[%s] Could not add user %s to thread %s: %s",
+                             self.name, raw, getattr(thread, "id", "?"), exc)
+
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
         Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
@@ -5552,6 +5567,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     # who aren't added. Handoff/cron threads must be visible in the channel.
                     type=discord.ChannelType.public_thread,
                 )
+                await self._add_allowed_users_to_thread(thread)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5566,6 +5582,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             thread = await seed_msg.create_thread(
                 name=thread_name, auto_archive_duration=1440, reason=reason,
             )
+            await self._add_allowed_users_to_thread(thread)
             return str(thread.id)
         except Exception as fallback_error:
             logger.warning(
